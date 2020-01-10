@@ -58,7 +58,7 @@ is_enforced=$(getenforce)
 if [[ $is_enforced != "Disabled" ]]; then
   setenforce 0
   sed -i 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config
-  
+
 fi
 
 yum install -y kubelet-$KUBERNETES_VERSION kubeadm-$KUBERNETES_VERSION kubernetes-cni
@@ -143,7 +143,7 @@ kubectl apply -f /tmp/calico.yaml
 
 # Allow the user to administer the cluster
 kubectl create clusterrolebinding admin-cluster-binding --clusterrole=cluster-admin --user=admin
-
+ls -la
 # Prepare the kubectl config file for download to client (IP address)
 export KUBECONFIG_OUTPUT=/home/centos/kubeconfig_ip
 kubeadm alpha kubeconfig user \
@@ -165,3 +165,43 @@ do
   kubectl apply -f /tmp/addon.yaml
   rm /tmp/addon.yaml
 done
+
+#Use the updated kubeconfig
+export KUBECONFIG=/home/centos/kubeconfig
+
+# Install Jenkins
+sudo yum install wget -y
+sudo yum install java -y
+sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+sudo rpm --import https://pkg.jenkins.io/redhat/jenkins.io.key
+sudo yum install jenkins -y
+sudo yum install git -y
+
+# Start Jenkins
+sudo systemctl enable jenkins
+sudo systemctl start jenkins
+
+# Download Istio
+cd /home/centos
+curl -L https://istio.io/downloadIstio | sh -
+cd istio-1.4.3
+export PATH=$PWD/bin:$PATH
+cd /home/centos
+
+# Install Istio
+istioctl manifest apply --set profile=default
+chown centos:centos istio-1.4.3
+
+# Deploy Jenkins
+kubectl --kubeconfig kubeconfig create ns jenkins
+kubectl --kubeconfig kubeconfig label ns jenkins istio-injection=enabled
+curl jenkins-configyaml > jenkins-config.yaml
+kubectl --kubeconfig kubeconfig apply -f jenkins.yaml
+
+# Create script to run on server shutdown
+echo "kubectl --kubeconfig /home/centos/kubeconfig delete pods --namespace=istio-system --all" > termination.sh
+echo "kubectl --kubeconfig /home/centos/kubeconfig delete services --namespace=istio-system --all" >> termination.sh
+chown centos:centos termination
+sudo chmod u+x termination
+sudo ln -s termination.sh /etc/rc0.d/S01termination
+

@@ -12,7 +12,7 @@ provider "aws" {
 #####
 
 module "kubeadm-token" {
-  source = "scholzj/kubeadm-token/random"
+  source = "git::https://github.com/shane-hogan/terraform-random-kubeadm-token.git"
 }
 
 #####
@@ -119,6 +119,7 @@ resource "aws_iam_instance_profile" "node_profile" {
 
 # Find VPC details based on Master subnet
 data "aws_subnet" "cluster_subnet" {
+  depends_on = [var.master_subnet_id]
   id = var.master_subnet_id
 }
 
@@ -133,64 +134,44 @@ resource "aws_security_group" "kubernetes" {
     },
     var.tags,
   )
-}
-
-# Allow outgoing connectivity
-resource "aws_security_group_rule" "allow_all_outbound_from_kubernetes" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.kubernetes.id
-}
-
-# Allow SSH connections only from specific CIDR (TODO)
-resource "aws_security_group_rule" "allow_ssh_from_cidr" {
-  count     = length(var.ssh_access_cidr)
-  type      = "ingress"
-  from_port = 22
-  to_port   = 22
-  protocol  = "tcp"
-  # TF-UPGRADE-TODO: In Terraform v0.10 and earlier, it was sometimes necessary to
-  # force an interpolation expression to be interpreted as a list by wrapping it
-  # in an extra set of list brackets. That form was supported for compatibilty in
-  # v0.11, but is no longer supported in Terraform v0.12.
-  #
-  # If the expression in the following list itself returns a list, remove the
-  # brackets to avoid interpretation as a list of lists. If the expression
-  # returns a single list item then leave it as-is and remove this TODO comment.
-  cidr_blocks       = [var.ssh_access_cidr[count.index]]
-  security_group_id = aws_security_group.kubernetes.id
-}
-
-# Allow the security group members to talk with each other without restrictions
-resource "aws_security_group_rule" "allow_cluster_crosstalk" {
-  type                     = "ingress"
-  from_port                = 0
-  to_port                  = 0
-  protocol                 = "-1"
-  source_security_group_id = aws_security_group.kubernetes.id
-  security_group_id        = aws_security_group.kubernetes.id
-}
-
-# Allow API connections only from specific CIDR (TODO)
-resource "aws_security_group_rule" "allow_api_from_cidr" {
-  count     = length(var.api_access_cidr)
-  type      = "ingress"
-  from_port = 6443
-  to_port   = 6443
-  protocol  = "tcp"
-  # TF-UPGRADE-TODO: In Terraform v0.10 and earlier, it was sometimes necessary to
-  # force an interpolation expression to be interpreted as a list by wrapping it
-  # in an extra set of list brackets. That form was supported for compatibilty in
-  # v0.11, but is no longer supported in Terraform v0.12.
-  #
-  # If the expression in the following list itself returns a list, remove the
-  # brackets to avoid interpretation as a list of lists. If the expression
-  # returns a single list item then leave it as-is and remove this TODO comment.
-  cidr_blocks       = [var.api_access_cidr[count.index]]
-  security_group_id = aws_security_group.kubernetes.id
+  //  Allow all outbound traffic
+  egress {
+    from_port = 0
+    protocol = "-1"
+    to_port = 0
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+//  Allow SSH access
+//  TODO Restrcit to specific cidr
+  ingress {
+    from_port = 22
+    protocol = "tcp"
+    to_port = 22
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+//  Allow the security group members to talk with each other without restrictions
+  ingress {
+    from_port = 0
+    protocol = "-1"
+    to_port = 0
+    self = true
+  }
+//  Allow API connections
+//  TODO Restrcit to specific cidr & move in to caTerraform instead of here
+  ingress {
+    from_port = 6443
+    protocol = "tcp"
+    to_port = 6443
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+//  Allow Access to Jenkins
+//  TODO Restrict to specific cidr & move in to caTerraform instead of here
+  ingress {
+    from_port = 8080
+    protocol = "tcp"
+    to_port = 8080
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 ##########
@@ -411,14 +392,21 @@ resource "aws_autoscaling_group" "nodes" {
 #####
 # DNS record
 #####
+resource "aws_route53_zone" "primary" {
+  name = "${var.hosted_zone}."
 
-data "aws_route53_zone" "dns_zone" {
-  name         = "${var.hosted_zone}."
-  private_zone = var.hosted_zone_private
+  vpc {
+    vpc_id = data.aws_subnet.cluster_subnet.vpc_id
+  }
 }
 
+//data "aws_route53_zone" "dns_zone" {
+//  name         = "${var.hosted_zone}."
+//  private_zone = var.hosted_zone_private
+//}
+
 resource "aws_route53_record" "master" {
-  zone_id = data.aws_route53_zone.dns_zone.zone_id
+  zone_id = aws_route53_zone.primary.zone_id
   name    = "${var.cluster_name}.${var.hosted_zone}"
   type    = "A"
   records = [aws_eip.master.public_ip]
